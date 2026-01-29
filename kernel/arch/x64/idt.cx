@@ -1,0 +1,273 @@
+#include <nanokoton/arch/idt.hpp>
+#include <nanokoton/arch/cpu.hpp>
+#include <nanokoton/arch/gdt.hpp>
+#include <nanokoton/core/debug.hpp>
+#include <nanokoton/core/kernel.hpp>
+#include <nanokoton/drivers/pic.hpp>
+#include <nanokoton/drivers/pit.hpp>
+#include <nanokoton/drivers/keyboard.hpp>
+
+namespace nk::arch {
+    IDTEntry InterruptDescriptorTable::entries_[IDT_ENTRY_COUNT];
+    IDTPointer InterruptDescriptorTable::pointer_;
+
+    void IDTEntry::set_offset(u64 offset) {
+        offset_low = offset & 0xFFFF;
+        offset_mid = (offset >> 16) & 0xFFFF;
+        offset_high = (offset >> 32) & 0xFFFFFFFF;
+    }
+
+    u64 IDTEntry::get_offset() const {
+        return (static_cast<u64>(offset_high) << 32) |
+               (static_cast<u64>(offset_mid) << 16) |
+               static_cast<u64>(offset_low);
+    }
+
+    void IDTEntry::set_present(bool present) {
+        if (present) {
+            type_attributes |= 0x80;
+        } else {
+            type_attributes &= ~0x80;
+        }
+    }
+
+    void IDTEntry::set_dpl(u8 dpl) {
+        type_attributes = (type_attributes & 0x9F) | ((dpl & 3) << 5);
+    }
+
+    void IDTEntry::set_type(u8 type) {
+        type_attributes = (type_attributes & 0xF0) | (type & 0x0F);
+    }
+
+    void InterruptDescriptorTable::init() {
+        debug::log(debug::LogLevel::Info, "IDT", "Initializing Interrupt Descriptor Table");
+        
+        init_entries();
+        register_exception_handlers();
+        register_interrupt_handlers();
+        load_idt();
+        
+        debug::log(debug::LogLevel::Info, "IDT", "IDT initialized with %u entries", IDT_ENTRY_COUNT);
+    }
+
+    void InterruptDescriptorTable::init_entries() {
+        for (usize i = 0; i < IDT_ENTRY_COUNT; i++) {
+            entries_[i] = IDTEntry();
+        }
+    }
+
+    void InterruptDescriptorTable::load_idt() {
+        pointer_.limit = sizeof(entries_) - 1;
+        pointer_.base = reinterpret_cast<u64>(&entries_);
+        
+        asm volatile("lidt %0" : : "m"(pointer_));
+    }
+
+    void InterruptDescriptorTable::set_entry(u8 index, u64 handler, u16 selector, u8 ist, u8 type, u8 dpl) {
+        if (index >= IDT_ENTRY_COUNT) {
+            return;
+        }
+        
+        IDTEntry& entry = entries_[index];
+        entry.set_offset(handler);
+        entry.selector = selector;
+        entry.ist = ist;
+        entry.set_type(type);
+        entry.set_dpl(dpl);
+        entry.set_present(true);
+        entry.reserved = 0;
+    }
+
+    void InterruptDescriptorTable::set_handler(u8 index, void (*handler)()) {
+        set_entry(index, reinterpret_cast<u64>(handler), GDT::KERNEL_CODE_SELECTOR, 0, 0x8E, 0);
+    }
+
+    const IDTEntry& InterruptDescriptorTable::get_entry(u8 index) {
+        if (index >= IDT_ENTRY_COUNT) {
+            static IDTEntry invalid_entry;
+            return invalid_entry;
+        }
+        
+        return entries_[index];
+    }
+
+    void InterruptDescriptorTable::enable_interrupts() {
+        asm volatile("sti");
+    }
+
+    void InterruptDescriptorTable::disable_interrupts() {
+        asm volatile("cli");
+    }
+
+    bool InterruptDescriptorTable::interrupts_enabled() {
+        u64 rflags;
+        asm volatile("pushfq; pop %0" : "=r"(rflags));
+        return rflags & (1 << 9);
+    }
+
+    void InterruptDescriptorTable::register_exception_handlers() {
+        set_handler(0, reinterpret_cast<void(*)()>(isr_stub_table[0]));
+        set_handler(1, reinterpret_cast<void(*)()>(isr_stub_table[1]));
+        set_handler(2, reinterpret_cast<void(*)()>(isr_stub_table[2]));
+        set_handler(3, reinterpret_cast<void(*)()>(isr_stub_table[3]));
+        set_handler(4, reinterpret_cast<void(*)()>(isr_stub_table[4]));
+        set_handler(5, reinterpret_cast<void(*)()>(isr_stub_table[5]));
+        set_handler(6, reinterpret_cast<void(*)()>(isr_stub_table[6]));
+        set_handler(7, reinterpret_cast<void(*)()>(isr_stub_table[7]));
+        set_handler(8, reinterpret_cast<void(*)()>(isr_stub_table[8]));
+        set_handler(9, reinterpret_cast<void(*)()>(isr_stub_table[9]));
+        set_handler(10, reinterpret_cast<void(*)()>(isr_stub_table[10]));
+        set_handler(11, reinterpret_cast<void(*)()>(isr_stub_table[11]));
+        set_handler(12, reinterpret_cast<void(*)()>(isr_stub_table[12]));
+        set_handler(13, reinterpret_cast<void(*)()>(isr_stub_table[13]));
+        set_handler(14, reinterpret_cast<void(*)()>(isr_stub_table[14]));
+        set_handler(15, reinterpret_cast<void(*)()>(isr_stub_table[15]));
+        set_handler(16, reinterpret_cast<void(*)()>(isr_stub_table[16]));
+        set_handler(17, reinterpret_cast<void(*)()>(isr_stub_table[17]));
+        set_handler(18, reinterpret_cast<void(*)()>(isr_stub_table[18]));
+        set_handler(19, reinterpret_cast<void(*)()>(isr_stub_table[19]));
+        set_handler(20, reinterpret_cast<void(*)()>(isr_stub_table[20]));
+        set_handler(21, reinterpret_cast<void(*)()>(isr_stub_table[21]));
+        set_handler(22, reinterpret_cast<void(*)()>(isr_stub_table[22]));
+        set_handler(23, reinterpret_cast<void(*)()>(isr_stub_table[23]));
+        set_handler(24, reinterpret_cast<void(*)()>(isr_stub_table[24]));
+        set_handler(25, reinterpret_cast<void(*)()>(isr_stub_table[25]));
+        set_handler(26, reinterpret_cast<void(*)()>(isr_stub_table[26]));
+        set_handler(27, reinterpret_cast<void(*)()>(isr_stub_table[27]));
+        set_handler(28, reinterpret_cast<void(*)()>(isr_stub_table[28]));
+        set_handler(29, reinterpret_cast<void(*)()>(isr_stub_table[29]));
+        set_handler(30, reinterpret_cast<void(*)()>(isr_stub_table[30]));
+        set_handler(31, reinterpret_cast<void(*)()>(isr_stub_table[31]));
+    }
+
+    void InterruptDescriptorTable::register_interrupt_handlers() {
+        set_handler(32, reinterpret_cast<void(*)()>(isr_stub_table[32]));
+        set_handler(33, reinterpret_cast<void(*)()>(isr_stub_table[33]));
+        set_handler(34, reinterpret_cast<void(*)()>(isr_stub_table[34]));
+        set_handler(35, reinterpret_cast<void(*)()>(isr_stub_table[35]));
+        set_handler(36, reinterpret_cast<void(*)()>(isr_stub_table[36]));
+        set_handler(37, reinterpret_cast<void(*)()>(isr_stub_table[37]));
+        set_handler(38, reinterpret_cast<void(*)()>(isr_stub_table[38]));
+        set_handler(39, reinterpret_cast<void(*)()>(isr_stub_table[39]));
+        set_handler(40, reinterpret_cast<void(*)()>(isr_stub_table[40]));
+        set_handler(41, reinterpret_cast<void(*)()>(isr_stub_table[41]));
+        set_handler(42, reinterpret_cast<void(*)()>(isr_stub_table[42]));
+        set_handler(43, reinterpret_cast<void(*)()>(isr_stub_table[43]));
+        set_handler(44, reinterpret_cast<void(*)()>(isr_stub_table[44]));
+        set_handler(45, reinterpret_cast<void(*)()>(isr_stub_table[45]));
+        set_handler(46, reinterpret_cast<void(*)()>(isr_stub_table[46]));
+        set_handler(47, reinterpret_cast<void(*)()>(isr_stub_table[47]));
+        
+        set_handler(128, reinterpret_cast<void(*)()>(isr_stub_table[128]));
+    }
+
+    InterruptDescriptorTable::ScopedInterruptDisable::ScopedInterruptDisable() {
+        was_enabled_ = InterruptDescriptorTable::interrupts_enabled();
+        if (was_enabled_) {
+            InterruptDescriptorTable::disable_interrupts();
+        }
+    }
+
+    InterruptDescriptorTable::ScopedInterruptDisable::~ScopedInterruptDisable() {
+        if (was_enabled_) {
+            InterruptDescriptorTable::enable_interrupts();
+        }
+    }
+}
+
+extern "C" void interrupt_handler(RegisterState* regs) {
+    using namespace nk;
+    
+    if (regs->interrupt_vector < 32) {
+        const char* exception_messages[] = {
+            "Division By Zero",
+            "Debug",
+            "Non-Maskable Interrupt",
+            "Breakpoint",
+            "Overflow",
+            "Bound Range Exceeded",
+            "Invalid Opcode",
+            "Device Not Available",
+            "Double Fault",
+            "Coprocessor Segment Overrun",
+            "Invalid TSS",
+            "Segment Not Present",
+            "Stack-Segment Fault",
+            "General Protection Fault",
+            "Page Fault",
+            "Reserved",
+            "x87 Floating-Point Exception",
+            "Alignment Check",
+            "Machine Check",
+            "SIMD Floating-Point Exception",
+            "Virtualization Exception",
+            "Control Protection Exception",
+            "Reserved",
+            "Reserved",
+            "Reserved",
+            "Reserved",
+            "Reserved",
+            "Reserved",
+            "Hypervisor Injection Exception",
+            "VMM Communication Exception",
+            "Security Exception",
+            "Reserved"
+        };
+        
+        debug::log(debug::LogLevel::Fatal, "CPU", 
+                  "Exception %u: %s", regs->interrupt_vector,
+                  exception_messages[regs->interrupt_vector]);
+        
+        debug::dump_registers(regs);
+        
+        if (regs->interrupt_vector == 14) {
+            u64 cr2 = arch::CPU::read_cr2();
+            debug::log(debug::LogLevel::Fatal, "CPU", "Page fault at address: 0x%016llX", cr2);
+            
+            const char* fault_reasons[] = {
+                "Supervisor read from non-present page",
+                "Supervisor read from read-only page",
+                "Supervisor write to non-present page",
+                "Supervisor write to read-only page",
+                "User read from non-present page",
+                "User read from read-only page",
+                "User write to non-present page",
+                "User write to read-only page"
+            };
+            
+            u8 fault_index = ((regs->error_code & 0x02) ? 4 : 0) |
+                            ((regs->error_code & 0x01) ? 2 : 0) |
+                            ((regs->error_code & 0x04) ? 1 : 0);
+            
+            debug::log(debug::LogLevel::Fatal, "CPU", "Fault reason: %s", fault_reasons[fault_index]);
+            debug::log(debug::LogLevel::Fatal, "CPU", "Error code: 0x%016llX", regs->error_code);
+        }
+        
+        Kernel::panic("Unhandled exception");
+    } else if (regs->interrupt_vector >= 32 && regs->interrupt_vector < 48) {
+        u8 irq = regs->interrupt_vector - 32;
+        
+        switch (irq) {
+            case 0:
+                drivers::PIT::interrupt_handler(regs);
+                break;
+            case 1:
+                drivers::Keyboard::interrupt_handler(regs);
+                break;
+            default:
+                debug::log(debug::LogLevel::Warning, "IDT", 
+                          "Unhandled IRQ %u", irq);
+                break;
+        }
+        
+        if (irq >= 8) {
+            drivers::PIC::send_eoi_slave();
+        }
+        drivers::PIC::send_eoi_master();
+    } else if (regs->interrupt_vector == 128) {
+        syscall::SystemCall::handle(regs);
+    } else {
+        debug::log(debug::LogLevel::Warning, "IDT", 
+                  "Unhandled interrupt %u", regs->interrupt_vector);
+    }
+}
